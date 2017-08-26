@@ -79,7 +79,9 @@ void fauxmoESP::_handleUDPPacket(IPAddress remoteIP, unsigned int remotePort, ui
     data[len] = 0;
 
     if (strstr((char *) data, UDP_SEARCH_PATTERN) == (char *) data) {
-        if (strstr((char *) data, UDP_DEVICE_PATTERN) != NULL) {
+        if (strstr((char *) data, UDP_DEVICE_PATTERN) != NULL ||
+            strstr((char *) data, UDP_EVENT_PATTERN) != NULL ||
+            strstr((char *) data, UDP_ROOT_PATTERN) != NULL) {
 
             #ifdef DEBUG_FAUXMO
                 char buffer[16];
@@ -100,20 +102,41 @@ void fauxmoESP::_handleUDPPacket(IPAddress remoteIP, unsigned int remotePort, ui
 
         }
     }
-
 }
 
 void fauxmoESP::_handleSetup(AsyncWebServerRequest *request, unsigned int device_id) {
 
     if (!_enabled) return;
 
-    DEBUG_MSG_FAUXMO("[FAUXMO] Device #%d /setup.xml\n", device_id);
+    DEBUG_MSG_FAUXMO("[FAUXMO] %s - Device #%d /setup.xml\n", request->client()->remoteIP().toString().c_str(), device_id);
     _devices[device_id].hit = true;
 
     fauxmoesp_device_t device = _devices[device_id];
-    char response[strlen(SETUP_TEMPLATE) + 50];
-    sprintf_P(response, SETUP_TEMPLATE, device.name, device.uuid);
-    request->send(200, "text/xml", response);
+    char response[strlen(SETUP_TEMPLATE) + 70];
+    sprintf_P(response, SETUP_TEMPLATE, device.name, device.uuid, device.uuid, device.uuid, device.uuid);
+    request->send(200, "text/xml; charset=\"utf-8\"", response);
+}
+
+void fauxmoESP::_handleEventService(AsyncWebServerRequest *request, unsigned int device_id) {
+
+    if (!_enabled) return;
+
+    DEBUG_MSG_FAUXMO("[FAUXMO] %s - Device #%d /eventservice.xml\n", request->client()->remoteIP().toString().c_str(), device_id);
+
+    char response[strlen(EVENTSERVICE_TEMPLATE) + 50];
+    sprintf_P(response, EVENTSERVICE_TEMPLATE);
+    request->send(200, "text/xml; charset=\"utf-8\"", response);
+}
+
+void fauxmoESP::_handleDeviceInfoService(AsyncWebServerRequest *request, unsigned int device_id) {
+
+    if (!_enabled) return;
+
+    DEBUG_MSG_FAUXMO("[FAUXMO] %s - Device #%d /deviceinfoservice.xml\n", request->client()->remoteIP().toString().c_str(), device_id);
+
+    char response[strlen(DEVICEINFOSERVICE_TEMPLATE) + 50];
+    sprintf_P(response, DEVICEINFOSERVICE_TEMPLATE);
+    request->send(200, "text/xml; charset=\"utf-8\"", response);
 
 }
 
@@ -121,7 +144,16 @@ void fauxmoESP::_handleContent(AsyncWebServerRequest *request, unsigned int devi
 
     if (!_enabled) return;
 
-    DEBUG_MSG_FAUXMO("[FAUXMO] Device #%d /upnp/control/basicevent1\n", device_id);
+    DEBUG_MSG_FAUXMO("[FAUXMO] %s - Device #%d /upnp/control/basicevent1\n", request->client()->remoteIP().toString().c_str(), device_id);
+
+    //List all collected headers
+    int headers = request->headers();
+    int i;
+    for (i=0; i < headers; i++) {
+        AsyncWebHeader* h = request->getHeader(i);
+        DEBUG_MSG_FAUXMO("HEADER[%s]: %s\n", h->name().c_str(), h->value().c_str());
+    }
+
     fauxmoesp_device_t device = _devices[device_id];
 
     if (strstr(content, "<BinaryState>0</BinaryState>") != NULL) {
@@ -133,6 +165,8 @@ void fauxmoESP::_handleContent(AsyncWebServerRequest *request, unsigned int devi
     }
 
 }
+
+
 
 void fauxmoESP::addDevice(const char * device_name) {
 
@@ -152,9 +186,19 @@ void fauxmoESP::addDevice(const char * device_name) {
     new_device.server->on("/setup.xml", HTTP_GET, [this, device_id](AsyncWebServerRequest *request){
         _handleSetup(request, device_id);
     });
+    new_device.server->on("/eventservice.xml", HTTP_GET, [this, device_id](AsyncWebServerRequest *request){
+        _handleEventService(request, device_id);
+    });
+    new_device.server->on("/deviceinfoservice.xml", HTTP_GET, [this, device_id](AsyncWebServerRequest *request){
+        _handleDeviceInfoService(request, device_id);
+    });
     new_device.server->on("/upnp/control/basicevent1", HTTP_POST,
         [](AsyncWebServerRequest *request) {
-            request->send(200);
+            AsyncWebServerResponse *response = request->beginResponse(200, "text/xml; charset=\"utf-8\"", BASICEVENT_TEMPLATE);
+            response->addHeader("Server", "Unspecified, UPnP/1.0, Unspecified");
+            response->addHeader("X-User-Agent", "redsonic");
+            response->addHeader("EXT", "");
+            request->send(response);
         },
         NULL,
         [this, device_id](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
@@ -162,6 +206,30 @@ void fauxmoESP::addDevice(const char * device_name) {
             _handleContent(request, device_id, (char *) data);
         }
     );
+    new_device.server->on("/upnp/control/deviceinfo1", HTTP_POST,
+        [](AsyncWebServerRequest *request) {
+            DEBUG_MSG_FAUXMO("[FAUXMO] %s - %s\n", request->client()->remoteIP().toString().c_str(), request->url().c_str());
+
+            //List all collected headers
+            int headers = request->headers();
+            int i;
+            for (i=0; i < headers; i++) {
+                AsyncWebHeader* h = request->getHeader(i);
+                DEBUG_MSG_FAUXMO("HEADER[%s]: %s\n", h->name().c_str(), h->value().c_str());
+            }
+
+            AsyncWebServerResponse *response = request->beginResponse(200, "text/xml; charset=\"utf-8\"", "");
+            response->addHeader("Server", "Unspecified, UPnP/1.0, Unspecified");
+            response->addHeader("X-User-Agent", "redsonic");
+            response->addHeader("Timeout", "Second-300");
+
+            request->send(response);
+        }
+    );
+    new_device.server->onNotFound([](AsyncWebServerRequest *request){
+        DEBUG_MSG_FAUXMO("[FAUXMO] %s - 404 %s\n", request->client()->remoteIP().toString().c_str(), request->url().c_str());
+        request->send(404);
+    });
 
     new_device.server->begin();
 
